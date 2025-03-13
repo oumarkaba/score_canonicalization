@@ -7,6 +7,7 @@ from canonical_network.models.equivariant_layers import RotationEquivariantConvL
 from torchvision import transforms
 from canonical_network.models.set_base_models import SequentialMultiple
 import numpy as np
+import math
 
 
 class CanonizationNetwork(nn.Module):
@@ -201,6 +202,7 @@ class PCACanonizationNetwork(nn.Module):
         reps = reps.view(batch_size, -1)
         return self.predictor(reps)
 
+
 class OptimizationCanonizationNetwork(nn.Module):
     def __init__(self, encoder, in_shape, num_classes, hyperparams=None):
         super().__init__()
@@ -298,7 +300,103 @@ class OptimizationCanonizationNetwork(nn.Module):
         v2 = v2 / torch.norm(v2, dim=1, keepdim=True)
         return torch.stack([v1, v2], dim=1)
 
+class PullbackCanonizationNetwork(nn.Module):
+    def __init__(self,
+                 encoder: nn.Module,
+                 in_shape,
+                 num_classes,
+                 device='cuda',
+                 hyperparams=None):
+        super().__init__()
+        self.device = device
+        self.encoder = encoder.to(device)
 
+        self.canonizer = SmallUNet(in_ch=in_shape[0], out_ch=in_shape[0]).to(device)
+
+        test_input = torch.zeros(1, *in_shape).to(device)
+        test_feat = self.encoder(test_input)  # shape: (1, ...)
+        feat_shape = test_feat.shape
+        print("Encoder test output shape:", feat_shape)
+
+        # Build a final predictor
+        if len(feat_shape) == 4:
+            # e.g. (1, C, H, W)
+            c, h, w = feat_shape[1], feat_shape[2], feat_shape[3]
+            self.predictor = nn.Linear(c*h*w, num_classes).to(device)
+        elif len(feat_shape) == 2:
+            # e.g. (1, D)
+            d = feat_shape[1]
+            self.predictor = nn.Linear(d, num_classes).to(device)
+        else:
+            raise ValueError("Base encoder output must be 2D or 4D.")
+
+    def rotate_image(self, x: torch.Tensor, angle_radians: torch.Tensor) -> torch.Tensor:
+        B, C, H, W = x.shape
+        angles_deg = angle_radians * (180.0 / math.pi)
+        center = torch.tensor([W/2, H/2], device=x.device, dtype=x.dtype).unsqueeze(0).repeat(B, 1)
+        scale  = torch.ones(angles_deg.shape[0], 2, device=x.device)
+        M = K.geometry.transform.get_rotation_matrix2d(center, angles_deg, scale)
+        x_rot = K.geometry.transform.warp_affine(x, M, dsize=(H, W))
+        return x_rot
+
+    def get_canonized_images(self, x: torch.Tensor):
+        with torch.enable_grad():
+            B = x.size(0)
+            device = x.device
+
+            # 1) sample g in [0,2*pi)
+            const = torch.tensor(2.0 * math.pi, device=device, dtype=torch.float32)
+            g_val = const*torch.rand(B, device=device, requires_grad=True)
+
+            # 2) rotate y = x by -g
+            minus_g = -g_val
+            y = self.rotate_image(x, minus_g)  # shape (B,C,H,W)
+
+            # 3) apply U-Net => (B,C,H,W), then detach
+            f_y = self.canonizer(y)
+            f_y_detach = f_y.detach()
+
+            # 4) define S_per_sample = sum over c,h,w of (y * f_y_detach)
+            # shape: (B,)
+            # We do an elementwise product => (B,C,H,W) => sum dim=(1,2,3)
+            S_per_sample = (y * f_y_detach).sum(dim=(1,2,3))
+
+            # total scalar S_total = S_per_sample.sum()
+            S_total = S_per_sample.sum()
+
+            # 5) dS_total/dg_val => shape (B,)
+            dS_dg = torch.autograd.grad(
+                outputs=S_total,
+                inputs=g_val,
+                retain_graph=False,
+                create_graph=False
+            )[0]  # shape (B,)
+
+            # G' = g_val - dS_dg
+            G_prime = g_val - dS_dg
+
+            # 6) x_canon = rotate(x, -G')
+            minus_Gp = -G_prime
+            x_canon = self.rotate_image(x, minus_Gp)
+            return x_canon, G_prime
+
+    def forward(self, x: torch.Tensor):
+        """
+        x: (B,C,H,W)
+        1) get_canonized_images => x_canon
+        2) encoder => flatten => predictor
+        returns (B, num_classes)
+        """
+        x_canon, G_prime = self.get_canonized_images(x)  # (B,C,H,W), (B,)
+        feat = self.encoder(x_canon)
+
+        # Flatten if 4D
+        if len(feat.shape) == 4:
+            B, C, H, W = feat.shape
+            feat = feat.view(B, -1)
+
+        out = self.predictor(feat)
+        return out
 
 class BasicConvEncoder(nn.Module):
     def __init__(self, in_shape, out_channels, num_layers=6):
@@ -419,3 +517,31 @@ class CustomDeepSets(nn.Module):
             raise NotImplementedError
         output = self.output_layer(x)
         return output
+
+
+class SmallUNet(nn.Module):
+    def __init__(self, in_ch=3, out_ch=3, mid_ch=32):
+        super().__init__()
+        self.conv1 = nn.Conv2d(in_ch, mid_ch, 5, padding=2)
+        self.conv2 = nn.Conv2d(mid_ch, mid_ch, 5, padding=2)
+        self.down  = nn.Conv2d(mid_ch, mid_ch*2, 3, stride=2, padding=1)
+        self.conv3 = nn.Conv2d(mid_ch*2, mid_ch*2, 3, padding=1)
+        self.up    = nn.ConvTranspose2d(mid_ch*2, mid_ch, 2, stride=2)
+        self.conv4 = nn.Conv2d(mid_ch*2, mid_ch, 5, padding=2)
+        self.conv5 = nn.Conv2d(mid_ch, out_ch, 5, padding=2)
+
+    def forward(self, x):
+        """
+        x: (B,C,H,W)
+        returns: (B,C,H,W)
+        """
+        d1 = torch.relu(self.conv1(x))    # (B, mid_ch, H, W)
+        d1 = torch.relu(self.conv2(d1))   # (B, mid_ch, H, W)
+        d2 = torch.relu(self.down(d1))    # (B, mid_ch*2, H/2, W/2)
+        d2 = torch.relu(self.conv3(d2))   # (B, mid_ch*2, H/2, W/2)
+
+        u1 = self.up(d2)                  # (B, mid_ch, H, W)
+        cat1 = torch.cat([u1, d1], dim=1) # (B, mid_ch+mid_ch, H, W)
+        u1 = torch.relu(self.conv4(cat1)) # (B, mid_ch, H, W)
+        out = self.conv5(u1)              # (B, out_ch, H, W)
+        return out

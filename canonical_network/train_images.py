@@ -12,7 +12,7 @@ from canonical_network.models.image_model import LitClassifier
 
 def get_hyperparams():
     parser = ArgumentParser()
-    parser.add_argument("--model", type=str, default="vanilla", help="model to train 1) vanilla 2) equivariant 3) canonized_pca 4) equivariant_optimization")
+    parser.add_argument("--model", type=str, default="pullback", help="model to train 1) vanilla 2) equivariant 3) canonized_pca 4) equivariant_optimization 5) pullback")
     parser.add_argument("--base_encoder", type=str, default="cnn",
                         help="base encoder to use for the model 1)cnn 2)resnet18 3)resnet50 4)resnet101 5)vit 6)rotation_eqv_cnn 7)rotoreflection_eqv_cnn")
     parser.add_argument("--pretrained", type=int, default=0,
@@ -20,7 +20,7 @@ def get_hyperparams():
     parser.add_argument("--data_mode", type=str, default='image',
                         help="different run modes 1)image 2)mixed (mixed has both image and pointcloud grid representation for deepsets)")
     parser.add_argument("--batch_size", type=int, default=256, help="batch size")
-    parser.add_argument("--run_mode", type=str, default='dryrun', help="different run modes 1)dryrun 2)train 3)test 4)auto_tune")
+    parser.add_argument("--run_mode", type=str, default='train', help="different run modes 1)dryrun 2)train 3)test 4)auto_tune")
     parser.add_argument("--use_wandb", type=int, default=True, help="use wandb")
     parser.add_argument("--num_epochs", type=int, default=100, help="number of epochs")
     parser.add_argument("--patience", type=int, default=20, help="patience for early stopping")
@@ -41,8 +41,8 @@ def get_hyperparams():
     parser.add_argument("--checkpoint_path", type=str, default="canonical_network/results", help="path to checkpoint")
     parser.add_argument("--deterministic", type=bool, default=False, help="deterministic training")
     parser.add_argument("--wandb_project", type=str, default="canonical_network", help="wandb project name")
-    parser.add_argument("--wandb_entity", type=str, default="", help="wandb entity name")
-    parser.add_argument("--save_canonized_images", type=int, default=0, help="save canonized images")
+    parser.add_argument("--wandb_entity", type=str, default="oumarkaba", help="wandb entity name")
+    parser.add_argument("--save_canonized_images", type=int, default=1, help="save canonized images")
     parser.add_argument("--check_invariance", type=int, default=0, help="check if the network is invariant")
     parser.add_argument("--num_channels", type=int, default=20, help="num_channels for equivariant cnn base encoder")
 

@@ -3,7 +3,7 @@ import pytorch_lightning as pl
 import torch
 from torch.optim.lr_scheduler import OneCycleLR, MultiStepLR
 from canonical_network.models.image_networks import VanillaNetwork, EquivariantCanonizationNetwork, \
-    BasicConvEncoder, Identity, PCACanonizationNetwork, RotationEquivariantConvEncoder, OptimizationCanonizationNetwork
+    BasicConvEncoder, Identity, PCACanonizationNetwork, RotationEquivariantConvEncoder, OptimizationCanonizationNetwork, PullbackCanonizationNetwork
 from canonical_network.models.resnet import resnet44
 import torchvision
 from canonical_network.utils import check_rotation_invariance, check_rotoreflection_invariance, save_images_class_wise
@@ -87,6 +87,11 @@ class LitClassifier(pl.LightningModule):
                 self.encoder, self.im_shape, num_classes,
                 hyperparams
             )
+        elif hyperparams.model == 'pullback':
+            self.network = PullbackCanonizationNetwork(
+                self.encoder, self.im_shape, num_classes, 'cpu',
+                hyperparams
+            )
         else:
             raise ValueError('model not implemented for now.')
         self.hyperparams = hyperparams
@@ -143,7 +148,7 @@ class LitClassifier(pl.LightningModule):
         else:
             x, points, y = batch
         x = x.reshape(x.size(0), self.im_shape[0], self.im_shape[1], self.im_shape[2])
-        if self.hyperparams.model in ('equivariant', 'canonized_pca'):
+        if self.hyperparams.model in ('equivariant', 'canonized_pca', 'pullback'):
             if self.hyperparams.check_invariance:
                 if self.hyperparams.group_type == 'roto-reflection':
                     self.num_batches_invariant += check_rotoreflection_invariance(self.network, x, self.hyperparams.num_rotations)

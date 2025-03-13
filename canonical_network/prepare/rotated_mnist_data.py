@@ -128,7 +128,7 @@ def image_to_set(img):
 
 
 class RotatedMNISTDataModule(pl.LightningDataModule):
-    def __init__(self, hyperparams, download=False, mode='image'):
+    def __init__(self, hyperparams, download=True, mode='image'):
         '''
         Args:
             :param hyperparams: hyperparameters
